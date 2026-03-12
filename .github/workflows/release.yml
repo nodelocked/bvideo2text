@@ -2,19 +2,43 @@ name: Build and Release
 
 on:
   push:
-    branches:
-      - main  # 每次 push 到 main 分支时触发
     tags:
-      - 'v*'  # 推送 v 开头的 tag 时也触发
+      - 'v*'  # 仅在推送 v 开头的 tag 时触发，如 v1.0.0
   workflow_dispatch:  # 支持手动触发
 
 permissions:
   contents: write
 
 jobs:
-  build-windows:
-    name: Build Windows Release
+  build-with-model:
+    name: "Build ${{ matrix.variant }}"
     runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          # 每个 Whisper 模型单独打包一个 exe（内含模型文件）
+          - variant: tiny
+            model: tiny
+            download_model: true
+          - variant: base
+            model: base
+            download_model: true
+          - variant: small
+            model: small
+            download_model: true
+          - variant: medium
+            model: medium
+            download_model: true
+          - variant: large
+            model: large
+            download_model: true
+          - variant: turbo
+            model: turbo
+            download_model: true
+          # 精简版：包含 Whisper 库但不带模型（首次使用时自动下载）
+          - variant: all-models
+            model: ""
+            download_model: false
 
     steps:
       - name: Checkout code
@@ -30,23 +54,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller
           pip install openai-whisper
+          pip install opencc-python-reimplemented
 
       - name: Download BBDown
         shell: pwsh
         run: |
-          # 获取 BBDown 最新版本
           $release = Invoke-RestMethod -Uri "https://api.github.com/repos/nilaoda/BBDown/releases/latest"
           $asset = $release.assets | Where-Object { $_.name -like "*win-x64*" -and $_.name -like "*.zip" } | Select-Object -First 1
           
           if ($null -eq $asset) {
-            # 如果没有 zip，尝试找单独的 exe
             $asset = $release.assets | Where-Object { $_.name -like "*win-x64*" } | Select-Object -First 1
           }
           
           Write-Host "Downloading BBDown: $($asset.name)"
           Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "bbdown_download.zip"
           
-          # 尝试解压，如果失败则说明它本身就是个 exe
           try {
             Expand-Archive -Path "bbdown_download.zip" -DestinationPath "bbdown_temp" -Force
             $bbdownExe = Get-ChildItem -Path "bbdown_temp" -Filter "BBDown.exe" -Recurse | Select-Object -First 1
@@ -59,32 +81,109 @@ jobs:
           
           Write-Host "BBDown.exe ready: $(Test-Path BBDown.exe)"
 
-      - name: Build with PyInstaller
+      - name: Download Whisper model
+        if: matrix.download_model
+        shell: python
         run: |
-          pyinstaller `
-            --name "B站视频转文本" `
-            --windowed `
-            --noconfirm `
-            --clean `
-            --add-data "BBDown.exe;." `
-            --hidden-import "whisper" `
-            --hidden-import "torch" `
-            --hidden-import "tqdm" `
-            --hidden-import "tiktoken" `
-            --hidden-import "tiktoken_ext" `
-            --hidden-import "tiktoken_ext.openai_public" `
-            --hidden-import "numba" `
-            --collect-data "whisper" `
-            main.py
+          import whisper
+          import os
+          print(f"Downloading model: ${{ matrix.model }}")
+          model = whisper.load_model("${{ matrix.model }}")
+          # 找到模型缓存路径
+          cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "whisper")
+          print(f"Model cache dir: {cache_dir}")
+          for f in os.listdir(cache_dir):
+              fpath = os.path.join(cache_dir, f)
+              print(f"  {f} ({os.path.getsize(fpath) / 1024 / 1024:.1f} MB)")
+
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          $modelArg = @()
+          
+          # 如果有预下载的模型，把模型文件也打包进去
+          $cacheDir = Join-Path $env:USERPROFILE ".cache\whisper"
+          if (("${{ matrix.download_model }}" -eq "true") -and (Test-Path $cacheDir)) {
+            $modelArg += "--add-data"
+            $modelArg += "$cacheDir;whisper_models"
+            Write-Host "Including model files from: $cacheDir"
+          }
+          
+          $args = @(
+            "--name", "B站视频转文本-${{ matrix.variant }}"
+            "--windowed"
+            "--noconfirm"
+            "--clean"
+            "--add-data", "BBDown.exe;."
+            "--hidden-import", "whisper"
+            "--hidden-import", "torch"
+            "--hidden-import", "tqdm"
+            "--hidden-import", "tiktoken"
+            "--hidden-import", "tiktoken_ext"
+            "--hidden-import", "tiktoken_ext.openai_public"
+            "--hidden-import", "numba"
+            "--hidden-import", "opencc"
+            "--collect-data", "whisper"
+            "--collect-data", "opencc"
+          ) + $modelArg + @("main.py")
+          
+          Write-Host "Running: pyinstaller $($args -join ' ')"
+          & pyinstaller @args
 
       - name: Create release archive
         shell: pwsh
         run: |
-          # 创建发布压缩包
-          Compress-Archive -Path "dist\B站视频转文本\*" -DestinationPath "bvideo2text-windows.zip"
+          $distDir = "dist\B站视频转文本-${{ matrix.variant }}"
           
-          # 同时创建一个不含 Whisper 的精简版
-          # 精简版：只打包核心脚本 + BBDown
+          # 如果有模型文件，复制到正确的位置
+          $modelsDir = Join-Path $distDir "whisper_models"
+          if (Test-Path $modelsDir) {
+            # 设置环境变量让程序知道模型位置
+            Write-Host "Models included in package at: $modelsDir"
+          }
+          
+          Compress-Archive -Path "$distDir\*" -DestinationPath "bvideo2text-${{ matrix.variant }}.zip"
+          
+          $zipSize = (Get-Item "bvideo2text-${{ matrix.variant }}.zip").Length / 1MB
+          Write-Host "Archive size: $([math]::Round($zipSize, 1)) MB"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bvideo2text-${{ matrix.variant }}
+          path: bvideo2text-${{ matrix.variant }}.zip
+
+  # -------------------------------------------------------
+  # 精简版：不含 Whisper，仅字幕提取
+  # -------------------------------------------------------
+  build-lite:
+    name: Build lite (no Whisper)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download BBDown
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/nilaoda/BBDown/releases/latest"
+          $asset = $release.assets | Where-Object { $_.name -like "*win-x64*" -and $_.name -like "*.zip" } | Select-Object -First 1
+          if ($null -eq $asset) {
+            $asset = $release.assets | Where-Object { $_.name -like "*win-x64*" } | Select-Object -First 1
+          }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "bbdown_download.zip"
+          try {
+            Expand-Archive -Path "bbdown_download.zip" -DestinationPath "bbdown_temp" -Force
+            $bbdownExe = Get-ChildItem -Path "bbdown_temp" -Filter "BBDown.exe" -Recurse | Select-Object -First 1
+            if ($bbdownExe) { Copy-Item $bbdownExe.FullName -Destination "BBDown.exe" -Force }
+          } catch {
+            Rename-Item "bbdown_download.zip" "BBDown.exe" -Force
+          }
+
+      - name: Create lite archive
+        shell: pwsh
+        run: |
           $liteDir = "bvideo2text-lite"
           New-Item -ItemType Directory -Path $liteDir -Force
           Copy-Item "main.py" $liteDir
@@ -94,31 +193,38 @@ jobs:
           Copy-Item "README.md" $liteDir
           Copy-Item -Recurse "core" "$liteDir\core"
           
-          # 创建一个启动脚本
-          @"
-          @echo off
-          echo 正在启动 B站视频转文本...
-          python main.py
-          if errorlevel 1 (
-              echo.
-              echo [错误] 启动失败！请确保已安装 Python 并运行 install.bat
-              pause
-          )
-          "@ | Out-File -FilePath "$liteDir\启动.bat" -Encoding ascii
+          $batContent = "@echo off`r`necho 正在启动 B站视频转文本...`r`npython main.py`r`nif errorlevel 1 (`r`n    echo.`r`n    echo [错误] 启动失败！请确保已安装 Python 并运行 install.bat`r`n    pause`r`n)"
+          Set-Content -Path "$liteDir\启动.bat" -Value $batContent -Encoding ascii
           
           Compress-Archive -Path "$liteDir\*" -DestinationPath "bvideo2text-lite.zip"
 
-      - name: Generate version tag
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bvideo2text-lite
+          path: bvideo2text-lite.zip
+
+  # -------------------------------------------------------
+  # 发布 Release
+  # -------------------------------------------------------
+  release:
+    name: Create Release
+    needs: [build-with-model, build-lite]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f -name "*.zip" | sort
+
+      - name: Get tag name
         id: release_info
-        shell: bash
         run: |
-          # 如果是 tag 推送，使用 tag 名字；否则用日期+短 SHA 生成版本号
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-          else
-            TAG="build-$(date +'%Y%m%d')-${GITHUB_SHA::7}"
-          fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
@@ -128,28 +234,46 @@ jobs:
           name: "B站视频转文本 ${{ steps.release_info.outputs.tag }}"
           body: |
             ## 📺 B站视频转文本 ${{ steps.release_info.outputs.tag }}
-            
-            发布日期: ${{ steps.release_info.outputs.date }}
-            
-            ### 📦 下载说明
-            
-            | 文件 | 说明 | 适用场景 |
-            |------|------|---------| 
-            | `bvideo2text-windows.zip` | **完整版** - 包含 Whisper AI 转写 | 开箱即用，文件较大 |
-            | `bvideo2text-lite.zip` | **精简版** - 仅字幕提取 | 文件小，需要 Python 环境 |
-            
-            ### 🚀 快速开始
-            
-            **完整版**：解压 → 运行 `B站视频转文本.exe`
-            
-            **精简版**：解压 → 双击 `install.bat` 安装依赖 → 双击 `启动.bat`
 
-            ### ⚠️ 注意事项
-            - 完整版已包含所有依赖，解压即用
-            - 首次运行 Whisper 转写时会自动下载模型文件（约 150MB）
-            - 有 NVIDIA 显卡会自动使用 GPU 加速
+            发布日期: ${{ steps.release_info.outputs.date }}
+
+            ### 📦 下载说明
+
+            根据你的需求选择合适的版本：
+
+            | 文件 | 说明 | 大小 |
+            |------|------|------|
+            | `bvideo2text-tiny.zip` | 内置 tiny 模型，速度最快 | ~200 MB |
+            | `bvideo2text-base.zip` | 内置 base 模型，**推荐日常使用** | ~250 MB |
+            | `bvideo2text-small.zip` | 内置 small 模型，效果更好 | ~600 MB |
+            | `bvideo2text-medium.zip` | 内置 medium 模型，高质量 | ~1.5 GB |
+            | `bvideo2text-large.zip` | 内置 large 模型，最佳效果 | ~3 GB |
+            | `bvideo2text-turbo.zip` | 内置 turbo 模型，速度与质量平衡 | ~1.5 GB |
+            | `bvideo2text-all-models.zip` | 包含 Whisper 库，首次转写时下载模型 | ~200 MB |
+            | `bvideo2text-lite.zip` | **精简版** - 仅字幕提取，需 Python 环境 | ~20 MB |
+
+            ### 🚀 快速开始
+
+            1. 下载你需要的 `.zip` 文件（推荐 `base`）
+            2. 解压到任意目录
+            3. 运行 `B站视频转文本-xxx.exe`
+
+            ### 💡 如何选择？
+
+            - **只需要提取字幕**（大部分B站视频都有）→ 任何版本都行，精简版最小
+            - **需要语音转写** → 选择一个带模型的版本
+              - 推荐 `base`（速度快，效果够用）
+              - 追求效果选 `medium` 或 `turbo`
+            - **有 NVIDIA 显卡** → 自动使用 GPU 加速
+            - **无 NVIDIA 显卡** → 自动回退 CPU，建议选 `tiny` 或 `base`
           files: |
-            bvideo2text-windows.zip
-            bvideo2text-lite.zip
+            artifacts/bvideo2text-tiny/bvideo2text-tiny.zip
+            artifacts/bvideo2text-base/bvideo2text-base.zip
+            artifacts/bvideo2text-small/bvideo2text-small.zip
+            artifacts/bvideo2text-medium/bvideo2text-medium.zip
+            artifacts/bvideo2text-large/bvideo2text-large.zip
+            artifacts/bvideo2text-turbo/bvideo2text-turbo.zip
+            artifacts/bvideo2text-all-models/bvideo2text-all-models.zip
+            artifacts/bvideo2text-lite/bvideo2text-lite.zip
           draft: false
           prerelease: false

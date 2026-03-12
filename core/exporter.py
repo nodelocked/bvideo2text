@@ -1,12 +1,26 @@
 """
 文本导出模块
 将提取的文本内容导出为 .txt 文件
+自动将繁体中文转换为简体中文
 """
 
 import os
 import re
 from datetime import datetime
 from typing import Optional
+
+
+def _convert_to_simplified(text: str) -> str:
+    """将繁体中文转换为简体中文"""
+    try:
+        from opencc import OpenCC
+        cc = OpenCC('t2s')  # Traditional to Simplified
+        return cc.convert(text)
+    except ImportError:
+        # opencc 未安装时不转换
+        return text
+    except Exception:
+        return text
 
 
 def sanitize_filename(name: str) -> str:
@@ -45,16 +59,29 @@ def export_text(
     """
     # 确保输出目录存在
     os.makedirs(output_dir, exist_ok=True)
+
+    # 繁体转简体
+    text = _convert_to_simplified(text)
+    video_title = _convert_to_simplified(video_title)
     
-    # 生成文件名
+    if log_callback:
+        log_callback("[信息] 已将繁体中文转换为简体中文")
+
+    # 提取视频 ID (BV号、av号等)
+    video_id = ""
+    id_match = re.search(r'(BV\w+|bv\w+|av\d+|ep\d+|ss\d+)', video_url, re.IGNORECASE)
+    if id_match:
+        video_id = f"_{id_match.group(1)}"
+
+    # 生成文件名，包含标题和视频ID
     safe_title = sanitize_filename(video_title)
-    filename = f"{safe_title}.txt"
+    filename = f"{safe_title}{video_id}.txt"
     filepath = os.path.join(output_dir, filename)
     
     # 如果文件已存在，加上时间戳
     if os.path.exists(filepath):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{safe_title}_{timestamp}.txt"
+        filename = f"{safe_title}{video_id}_{timestamp}.txt"
         filepath = os.path.join(output_dir, filename)
     
     # 组织内容

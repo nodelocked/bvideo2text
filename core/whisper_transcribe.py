@@ -4,8 +4,21 @@ Whisper 语音转写模块
 自动检测 CUDA GPU，有则用GPU加速，无则用CPU
 """
 
+import io
 import os
+import sys
 from typing import Optional, Callable
+
+
+def _fix_stdio():
+    """
+    修复 PyInstaller --windowed 模式下 sys.stdout/stderr 为 None 的问题。
+    tqdm 等库依赖 sys.stderr.write()，为 None 时会崩溃。
+    """
+    if sys.stdout is None:
+        sys.stdout = io.StringIO()
+    if sys.stderr is None:
+        sys.stderr = io.StringIO()
 
 
 def check_whisper_available() -> bool:
@@ -56,6 +69,29 @@ def transcribe(
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"音频文件不存在: {audio_path}")
 
+    # 修复打包后 stdio 为 None 的问题
+    _fix_stdio()
+
+    # 如果是打包后的程序，检查是否有内置模型文件
+    if getattr(sys, 'frozen', False):
+        base_dir = sys._MEIPASS if hasattr(sys, '_MEIPASS') else os.path.dirname(sys.executable)
+        bundled_models = os.path.join(base_dir, "whisper_models")
+        if os.path.isdir(bundled_models):
+            # 将内置模型目录设置为 whisper 缓存目录
+            os.environ["XDG_CACHE_HOME"] = base_dir
+            # whisper 会在 {XDG_CACHE_HOME}/whisper/ 下查找模型
+            # 但我们的模型在 whisper_models/，需要重命名或软链接
+            whisper_cache = os.path.join(base_dir, "whisper")
+            if not os.path.exists(whisper_cache):
+                try:
+                    os.rename(bundled_models, whisper_cache)
+                except Exception:
+                    # 如果重命名失败，直接设置环境变量指向原目录
+                    import shutil
+                    shutil.copytree(bundled_models, whisper_cache, dirs_exist_ok=True)
+            if log_callback:
+                log_callback(f"[Whisper] 使用内置模型文件")
+
     import whisper
     
     # 检测设备
@@ -83,59 +119,9 @@ def transcribe(
 
     text = result.get("text", "")
     
-    # 也收集带时间戳的段落（可选用）
     segments = result.get("segments", [])
     
     if log_callback:
         log_callback(f"[Whisper] 转写完成，共 {len(segments)} 个片段，{len(text)} 个字符")
 
     return text
-
-
-def transcribe_with_segments(
-    audio_path: str,
-    model_name: str = "base",
-    language: str = "zh",
-    log_callback: Optional[Callable] = None
-) -> tuple:
-    """
-    转写并返回分段结果
-    
-    Returns:
-        (full_text, segments_list)
-        segments_list: [{"start": float, "end": float, "text": str}, ...]
-    """
-    if not os.path.exists(audio_path):
-        raise FileNotFoundError(f"音频文件不存在: {audio_path}")
-
-    import whisper
-    
-    device_info = get_device_info()
-    if log_callback:
-        device_desc = device_info['device_name'] if device_info['cuda_available'] else 'CPU'
-        log_callback(f"[Whisper] 使用设备: {device_desc}，模型: {model_name}")
-
-    model = whisper.load_model(model_name, device=device_info["device"])
-    
-    if log_callback:
-        log_callback(f"[Whisper] 开始转写...")
-
-    result = model.transcribe(
-        audio_path,
-        language=language,
-        verbose=False
-    )
-
-    text = result.get("text", "")
-    segments = []
-    for seg in result.get("segments", []):
-        segments.append({
-            "start": seg["start"],
-            "end": seg["end"],
-            "text": seg["text"].strip()
-        })
-
-    if log_callback:
-        log_callback(f"[Whisper] 转写完成")
-
-    return text, segments

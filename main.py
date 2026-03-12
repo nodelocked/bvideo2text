@@ -3,12 +3,21 @@ B站视频转文本 GUI 工具
 输入B站视频链接，下载字幕或转写音频，导出纯文本
 """
 
+import io
+import sys
+
+# PyInstaller --windowed 模式下 sys.stdout/stderr 可能为 None，
+# 导致 tqdm 等库崩溃。必须在最早期修复。
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
+if sys.stderr is None:
+    sys.stderr = io.StringIO()
+
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 import threading
 import json
 import os
-import sys
 import tempfile
 import shutil
 import re
