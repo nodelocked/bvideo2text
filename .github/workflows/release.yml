@@ -14,6 +14,7 @@ jobs:
     name: "Build ${{ matrix.variant }}"
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           # 每个 Whisper 模型单独打包一个 exe（内含模型文件）
@@ -211,6 +212,7 @@ jobs:
     name: Create Release
     needs: [build-with-model, build-lite]
     runs-on: ubuntu-latest
+    if: always()
 
     steps:
       - name: Download all artifacts
@@ -267,13 +269,7 @@ jobs:
             - **有 NVIDIA 显卡** → 自动使用 GPU 加速
             - **无 NVIDIA 显卡** → 自动回退 CPU，建议选 `tiny` 或 `base`
           files: |
-            artifacts/bvideo2text-tiny/bvideo2text-tiny.zip
-            artifacts/bvideo2text-base/bvideo2text-base.zip
-            artifacts/bvideo2text-small/bvideo2text-small.zip
-            artifacts/bvideo2text-medium/bvideo2text-medium.zip
-            artifacts/bvideo2text-large/bvideo2text-large.zip
-            artifacts/bvideo2text-turbo/bvideo2text-turbo.zip
-            artifacts/bvideo2text-all-models/bvideo2text-all-models.zip
-            artifacts/bvideo2text-lite/bvideo2text-lite.zip
+            artifacts/**/*.zip
+          fail_on_unmatched_files: false
           draft: false
           prerelease: false
