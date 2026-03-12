@@ -2,8 +2,10 @@ name: Build and Release
 
 on:
   push:
+    branches:
+      - main  # 每次 push 到 main 分支时触发
     tags:
-      - 'v*'  # 推送 v 开头的 tag 时触发，如 v1.0.0
+      - 'v*'  # 推送 v 开头的 tag 时也触发
   workflow_dispatch:  # 支持手动触发
 
 permissions:
@@ -106,16 +108,23 @@ jobs:
           
           Compress-Archive -Path "$liteDir\*" -DestinationPath "bvideo2text-lite.zip"
 
-      - name: Get release info
+      - name: Generate version tag
         id: release_info
         shell: bash
         run: |
-          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          # 如果是 tag 推送，使用 tag 名字；否则用日期+短 SHA 生成版本号
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="build-$(date +'%Y%m%d')-${GITHUB_SHA::7}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release_info.outputs.tag }}
           name: "B站视频转文本 ${{ steps.release_info.outputs.tag }}"
           body: |
             ## 📺 B站视频转文本 ${{ steps.release_info.outputs.tag }}
@@ -125,7 +134,7 @@ jobs:
             ### 📦 下载说明
             
             | 文件 | 说明 | 适用场景 |
-            |------|------|---------|
+            |------|------|---------| 
             | `bvideo2text-windows.zip` | **完整版** - 包含 Whisper AI 转写 | 开箱即用，文件较大 |
             | `bvideo2text-lite.zip` | **精简版** - 仅字幕提取 | 文件小，需要 Python 环境 |
             
