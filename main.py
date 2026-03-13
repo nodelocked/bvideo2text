@@ -450,7 +450,7 @@ class BVideo2TextApp:
                 # 检查 Whisper 是否可用
                 from core.whisper_transcribe import check_whisper_available, transcribe
                 if not check_whisper_available():
-                    self.log("[错误] Whisper 未安装！请运行: pip install openai-whisper", "error")
+                    self.log("[错误] Whisper 未安装！请运行: pip install faster-whisper", "error")
                     self._set_status("处理失败 - Whisper 未安装")
                     return
 

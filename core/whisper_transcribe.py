@@ -1,6 +1,6 @@
 """
 Whisper 语音转写模块
-使用 OpenAI Whisper 将音频转为文本
+使用 faster-whisper 将音频转为文本
 自动检测 CUDA GPU，有则用GPU加速，无则用CPU
 """
 
@@ -22,9 +22,9 @@ def _fix_stdio():
 
 
 def check_whisper_available() -> bool:
-    """检查 whisper 是否可用"""
+    """检查 faster_whisper 是否可用"""
     try:
-        import whisper
+        import faster_whisper
         return True
     except ImportError:
         return False
@@ -36,6 +36,7 @@ def get_device_info() -> dict:
         "device": "cpu",
         "device_name": "CPU",
         "cuda_available": False,
+        "compute_type": "int8"
     }
     try:
         import torch
@@ -43,6 +44,7 @@ def get_device_info() -> dict:
             info["cuda_available"] = True
             info["device"] = "cuda"
             info["device_name"] = torch.cuda.get_device_name(0)
+            info["compute_type"] = "float16" # CUDA 通常支持 float16
     except ImportError:
         pass
     return info
@@ -55,7 +57,7 @@ def transcribe(
     log_callback: Optional[Callable] = None
 ) -> str:
     """
-    使用 Whisper 转写音频文件
+    使用 faster-whisper 转写音频文件
     
     Args:
         audio_path: 音频文件路径
@@ -72,27 +74,16 @@ def transcribe(
     # 修复打包后 stdio 为 None 的问题
     _fix_stdio()
 
-    # 如果是打包后的程序，检查是否有内置模型文件
+    from faster_whisper import WhisperModel
+    
+    # 构建缓存路径
     if getattr(sys, 'frozen', False):
         base_dir = sys._MEIPASS if hasattr(sys, '_MEIPASS') else os.path.dirname(sys.executable)
-        bundled_models = os.path.join(base_dir, "whisper_models")
-        if os.path.isdir(bundled_models):
-            # 将内置模型目录设置为 whisper 缓存目录
-            os.environ["XDG_CACHE_HOME"] = base_dir
-            # whisper 会在 {XDG_CACHE_HOME}/whisper/ 下查找模型
-            # 但我们的模型在 whisper_models/，需要重命名或软链接
-            whisper_cache = os.path.join(base_dir, "whisper")
-            if not os.path.exists(whisper_cache):
-                try:
-                    os.rename(bundled_models, whisper_cache)
-                except Exception:
-                    # 如果重命名失败，直接设置环境变量指向原目录
-                    import shutil
-                    shutil.copytree(bundled_models, whisper_cache, dirs_exist_ok=True)
-            if log_callback:
-                log_callback(f"[Whisper] 使用内置模型文件")
-
-    import whisper
+        download_root = os.path.join(base_dir, "whisper_models")
+    else:
+        download_root = os.path.join(os.path.expanduser("~"), ".cache", "whisper")
+        
+    os.makedirs(download_root, exist_ok=True)
     
     # 检测设备
     device_info = get_device_info()
@@ -101,27 +92,56 @@ def transcribe(
             log_callback(f"[Whisper] 检测到 GPU: {device_info['device_name']}，将使用 CUDA 加速")
         else:
             log_callback(f"[Whisper] 未检测到 CUDA GPU，将使用 CPU 模式（速度较慢）")
-        log_callback(f"[Whisper] 正在加载模型: {model_name} ...")
+        log_callback(f"[Whisper] 正在加载 faster-whisper 模型: {model_name}...")
 
     # 加载模型
-    model = whisper.load_model(model_name, device=device_info["device"])
+    try:
+        model = WhisperModel(
+            model_size_or_path=model_name,
+            device=device_info["device"],
+            compute_type=device_info["compute_type"],
+            download_root=download_root
+        )
+    except Exception as e:
+        if device_info["device"] == "cuda" and "cublas" in str(e).lower():
+            if log_callback:
+                log_callback(f"[警告] CUDA 初始化失败，可能缺少 cuBLAS/cuDNN 库。退回使用 CPU 模式！")
+            device_info["device"] = "cpu"
+            device_info["compute_type"] = "int8"
+            model = WhisperModel(
+                model_size_or_path=model_name,
+                device=device_info["device"],
+                compute_type=device_info["compute_type"],
+                download_root=download_root
+            )
+        else:
+            raise e
     
     if log_callback:
         log_callback(f"[Whisper] 模型加载完成，开始转写...")
         log_callback(f"[Whisper] 音频文件: {os.path.basename(audio_path)}")
 
     # 执行转写
-    result = model.transcribe(
-        audio_path,
+    segments, info = model.transcribe(
+        audio=audio_path,
         language=language,
-        verbose=False
+        beam_size=5,
+        vad_filter=True
     )
 
-    text = result.get("text", "")
-    
-    segments = result.get("segments", [])
+    full_text = []
+    segment_count = 0
     
     if log_callback:
-        log_callback(f"[Whisper] 转写完成，共 {len(segments)} 个片段，{len(text)} 个字符")
+        log_callback(f"[Whisper] 检测到语言: {info.language} (概率: {info.language_probability:.2f})")
+    
+    for segment in segments:
+        full_text.append(segment.text.strip())
+        segment_count += 1
+        
+    text = " ".join(full_text)
+    
+    if log_callback:
+        log_callback(f"[Whisper] 转写完成，共 {segment_count} 个片段，{len(text)} 个字符")
 
     return text

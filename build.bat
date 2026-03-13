@@ -20,13 +20,15 @@ pyinstaller ^
     --noconfirm ^
     --clean ^
     --add-data "BBDown.exe;." ^
-    --hidden-import "whisper" ^
+    --hidden-import "faster_whisper" ^
+    --hidden-import "ctranslate2" ^
     --hidden-import "torch" ^
     --hidden-import "tqdm" ^
     --hidden-import "tiktoken" ^
     --hidden-import "tiktoken_ext" ^
     --hidden-import "tiktoken_ext.openai_public" ^
-    --collect-data "whisper" ^
+    --collect-data "faster_whisper" ^
+    --collect-data "ctranslate2" ^
     --icon NONE ^
     main.py
 

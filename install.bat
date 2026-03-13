@@ -13,8 +13,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/3] 正在安装 Whisper 和依赖...
-pip install openai-whisper
+echo [1/3] 正在安装 faster-whisper 和依赖...
+pip install faster-whisper
 
 echo.
 echo [2/3] 检查 ffmpeg...

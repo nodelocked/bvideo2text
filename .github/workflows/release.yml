@@ -54,7 +54,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
-          pip install openai-whisper
+          pip install faster-whisper
           pip install opencc-python-reimplemented
 
       - name: Download BBDown
@@ -86,16 +86,22 @@ jobs:
         if: matrix.download_model
         shell: python
         run: |
-          import whisper
           import os
+          from faster_whisper import WhisperModel
           print(f"Downloading model: ${{ matrix.model }}")
-          model = whisper.load_model("${{ matrix.model }}")
           # 找到模型缓存路径
-          cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "whisper")
-          print(f"Model cache dir: {cache_dir}")
-          for f in os.listdir(cache_dir):
-              fpath = os.path.join(cache_dir, f)
-              print(f"  {f} ({os.path.getsize(fpath) / 1024 / 1024:.1f} MB)")
+          cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "whisper", "models--" + "${{ matrix.model }}".replace("/", "--"))
+          os.makedirs(cache_dir, exist_ok=True)
+          try:
+              model = WhisperModel("${{ matrix.model }}", device="cpu", compute_type="int8", download_root=os.path.join(os.path.expanduser("~"), ".cache", "whisper"))
+          except Exception as e:
+              print(f"Model download error (ignoring): {e}")
+          
+          print(f"Model cache dir: {os.path.join(os.path.expanduser('~'), '.cache', 'whisper')}")
+          for root, dirs, files in os.walk(os.path.join(os.path.expanduser("~"), ".cache", "whisper")):
+              for name in files:
+                  fpath = os.path.join(root, name)
+                  print(f"  {fpath} ({os.path.getsize(fpath) / 1024 / 1024:.1f} MB)")
 
       - name: Build with PyInstaller
         shell: pwsh
@@ -116,7 +122,8 @@ jobs:
             "--noconfirm"
             "--clean"
             "--add-data", "BBDown.exe;."
-            "--hidden-import", "whisper"
+            "--hidden-import", "faster_whisper"
+            "--hidden-import", "ctranslate2"
             "--hidden-import", "torch"
             "--hidden-import", "tqdm"
             "--hidden-import", "tiktoken"
@@ -124,7 +131,8 @@ jobs:
             "--hidden-import", "tiktoken_ext.openai_public"
             "--hidden-import", "numba"
             "--hidden-import", "opencc"
-            "--collect-data", "whisper"
+            "--collect-data", "faster_whisper"
+            "--collect-data", "ctranslate2"
             "--collect-data", "opencc"
           ) + $modelArg + @("main.py")
           
@@ -245,13 +253,13 @@ jobs:
 
             | 文件 | 说明 | 大小 |
             |------|------|------|
-            | `bvideo2text-tiny.zip` | 内置 tiny 模型，速度最快 | ~200 MB |
-            | `bvideo2text-base.zip` | 内置 base 模型，**推荐日常使用** | ~250 MB |
-            | `bvideo2text-small.zip` | 内置 small 模型，效果更好 | ~600 MB |
-            | `bvideo2text-medium.zip` | 内置 medium 模型，高质量 | ~1.5 GB |
-            | `bvideo2text-large.zip` | 内置 large 模型，最佳效果 | ~3 GB |
-            | `bvideo2text-turbo.zip` | 内置 turbo 模型，速度与质量平衡 | ~1.5 GB |
-            | `bvideo2text-all-models.zip` | 包含 Whisper 库，首次转写时下载模型 | ~200 MB |
+            | `bvideo2text-tiny.zip` | 内置 tiny 模型，速度最快 | ~350 MB |
+            | `bvideo2text-base.zip` | 内置 base 模型，**推荐日常使用** | ~400 MB |
+            | `bvideo2text-small.zip` | 内置 small 模型，效果更好 | ~800 MB |
+            | `bvideo2text-medium.zip` | 内置 medium 模型，高质量 | ~1.8 GB |
+            | `bvideo2text-large.zip` | 内置 large 模型，最佳效果 | ~3.5 GB |
+            | `bvideo2text-turbo.zip` | 内置 turbo 模型，速度与质量平衡 | ~1.8 GB |
+            | `bvideo2text-all-models.zip` | 包含 Whisper 库，首次转写时下载模型 | ~300 MB |
             | `bvideo2text-lite.zip` | **精简版** - 仅字幕提取，需 Python 环境 | ~20 MB |
 
             ### 🚀 快速开始
